@@ -7,11 +7,9 @@ import java.lang.String;
 import java.util.List;
 import android.util.Log;
 
-import com.hoho.android.usbserial.driver.UsbSerialPort;
-import com.hoho.android.usbserial.driver.UsbSerialProber;
-import com.hoho.android.usbserial.driver.UsbSerialDriver;
-import com.hoho.android.usbserial.driver.UsbSerialPort;
-import com.hoho.android.usbserial.driver.UsbId;
+import com.ftdi.j2xx.D2xxManager;
+import com.ftdi.j2xx.FT_Device;
+
 import android.hardware.usb.UsbManager;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
@@ -27,13 +25,14 @@ import java.io.IOException;
 import android.widget.Toast;
 import android.view.WindowManager;
 
-public class SIO2PCUS4A implements SerialDevice
+public class SIO2PC implements SerialDevice
 {
+    private D2xxManager ftdid2xx=null;
+    private FT_Device ftDevice = null;
+    private D2xxManager.FtDeviceInfoListNode devInfo;
     private int devCount = 0;
     private int counter;
     private UsbDevice device = null;
-    private UsbSerialDriver driver;
-    private UsbSerialPort sPort;
     private UsbManager manager;
     private PendingIntent pintent;
     private static final String ACTION_USB_PERMISSION =
@@ -42,7 +41,7 @@ public class SIO2PCUS4A implements SerialDevice
     private boolean debug = false;
     private SerialActivity sa = SerialActivity.s_activity;
 
-    SIO2PCUS4A() {
+    SIO2PC() {
         manager = (UsbManager)sa.getSystemService(Context.USB_SERVICE);
     }
 
@@ -71,8 +70,6 @@ public class SIO2PCUS4A implements SerialDevice
                     )
                 ) { dev_found = true; break; }
 
-                 if ((dev_vid  == 1659) && (dev_pid == 8963)) //PL2303
-                    { dev_found = true; break;}
 
         } while (deviceIterator.hasNext());
 
@@ -82,119 +79,110 @@ public class SIO2PCUS4A implements SerialDevice
         } else
             return 0;
 
-        Log.i("USB", "Device found!");
-        List<UsbSerialDriver> availableDrivers = UsbSerialProber.getDefaultProber().findAllDrivers(manager);
+            try {
+                ftdid2xx = D2xxManager.getInstance(sa);
+                devCount = (int)ftdid2xx.createDeviceInfoList(sa);
 
-        if (availableDrivers.isEmpty()) {
-            Log.i("USB", "No drivers found for attached usb devices");
-            return 0;
+                ftdid2xx.setVIDPID(1027, 33713);
+                ftdid2xx.setVIDPID(1027, 24597);
+                ftdid2xx.setVIDPID(1027, 33712);
+
+                if (!ftdid2xx.isFtDevice(device))
+                    return -1;
+
+                if (devCount > 0) {
+                    try
+                        {
+                            ftDevice = ftdid2xx.openByUsbDevice(sa, device);
+                    }
+                    catch(NullPointerException e){
+                            if (debug) Log.i("FTDI", e.getMessage(), e);
+                    }
+                    finally {
+                        if (ftDevice == null) {
+                            if (debug) Log.i("FTDI", "No Devices opened!");
+                                return devCount;
+                        }
+                    }
+
+                    if (ftDevice.isOpen()) {
+                        devInfo = ftDevice.getDeviceInfo();
+                        ftDevice.setBitMode((byte)0, D2xxManager.FT_BITMODE_RESET);
+
+                        boolean ret = ftDevice.setFlowControl(D2xxManager.FT_FLOW_NONE, (byte) 0x00, (byte)0x00 );
+                        //boolean ret = ftDevice.setFlowControl(D2xxManager.FT_FLOW_DTR_DSR, (byte) 0x00, (byte)0x00 );
+                        if (debug) Log.i("FTDI", "setFlowControl " + ret);
+
+                        ftDevice.setDataCharacteristics(D2xxManager.FT_DATA_BITS_8, D2xxManager.FT_STOP_BITS_1,
+                            D2xxManager.FT_PARITY_NONE);
+
+                        //ftDevice.clrDtr();
+                        //ftDevice.clrRts();
+
+                        //ftDevice.setLatencyTimer((byte)16);
+                        //ftDevice.purge((byte)(D2xxManager.FT_PURGE_TX | D2xxManager.FT_PURGE_RX));
+                        //ftDevice.restartInTask();
+
+                        if (debug) Log.i("FTDI", "Opened device " + devInfo.description);
+                    } else { if (debug) Log.i("FTDI", "No device opened!"); return 0; }
+                } else  if (debug) Log.i("FTDI", "No device connected!");
+        } catch (D2xxManager.D2xxException ex) {
+                ex.printStackTrace();
+                //ftDevice.close();
         }
 
-        Log.i("USB", "Driver found for attached usb device");
-        driver = availableDrivers.get(0);
-
-        UsbDeviceConnection connection = manager.openDevice(device);
-
-        sPort = driver.getPorts().get(0);
-
-        try {
-            sPort.open(connection);
-            sPort.setParameters(19200, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE);
-        } catch (IOException e) {
-            Log.i("USB", "Can't open port");
-            return -1;
-        }
-        Log.i("USB", "Device opened");
-        return 1;
+        if (debug) Log.i("FTDI", "devCount: " + devCount);
+        return devCount;
     }
 
     public void closeDevice() {
-     try {
-       if (sPort != null)
-            sPort.close();
-     } catch (IOException e) {
-            Log.i("USB", "Can't close port");
-    }
+        if (ftDevice != null) ftDevice.close();
     }
 
     public int setSpeed(int speed) {
-     int ret = 0;
-     try {
-        ret = sPort.setBaudRate(speed);
-     } catch (IOException e) {
-       Log.i("USB", "Can't set speed");
-     }
-     if (debug) Log.i("USB", "setBaudrate: " + ret);
-    return ret;
+        if (ftDevice == null) return 0;
+        if (ftDevice.setBaudRate(speed))
+            return speed;
+        else
+            return 0;
     }
 
     public int read(int size, int total)
     {
-    sa.rbuf.position(total);
-    int ret = 0, rd = 0;
-
-    try {
+        sa.rbuf.position(total);
+        int ret = 0, rd = 0;
         do {
-             rd = sPort.sread(sa.rb, size, 5000);
+             rd = ftDevice.read(sa.rb, size, 5000);
              sa.rbuf.put(sa.rb, 0, rd);
              size -= rd; ret += rd;
         } while (size > 0);
-    } catch (IOException e) {
-       Log.i("USB", "Can't read");
-    }
-    return ret;
+        return ret;
     }
 
     public int write(int size, int total) {
-    int ret = 0, wn = 0;
-    sa.wbuf.position(total);
-    sa.wbuf.get(sa.wb, 0, size);
-
-    try {
+        int ret = 0, wn = 0;
+        sa.wbuf.position(total);
+        sa.wbuf.get(sa.wb, 0, size);
         do {
-            wn = sPort.swrite(sa.wb, size, 5000);
+            wn = ftDevice.write(sa.wb, size);
             size -= wn; ret += wn;
         } while (size > 0);
-    } catch (IOException e) {
-       Log.i("USB", "Can't write");
-    }
-    return ret;
+        return ret;
     }
 
     public boolean purge() {
-    boolean ret;
-    try {
-        ret = sPort.purgeHwBuffers(true, true);
-    } catch (IOException e) {
-        Log.i("USB", "Can't purge");
-        ret = false;
-    }
-    if (debug) Log.i("USB", "purge: " + ret);
-    return ret;
+        boolean ret;
+        ret = ftDevice.purge((byte)(D2xxManager.FT_PURGE_TX | D2xxManager.FT_PURGE_RX));
+        if (debug) Log.i("USB", "purge: " + ret);
+        return ret;
     }
 
     public boolean purgeTX() {
-    boolean ret;
-    try {
-        ret = sPort.purgeHwBuffers(false, true);
-    } catch (IOException e) {
-        Log.i("USB", "Can't purge TX buffer");
-        ret = false;
-    }
-    if (debug) Log.i("USB", "purgeTX: " + ret);
-    return ret;
+        return ftDevice.purge((byte)(D2xxManager.FT_PURGE_TX));
     }
 
     public boolean purgeRX() {
-    boolean ret;
-    try {
-        ret = sPort.purgeHwBuffers(true, false);
-    } catch (IOException e) {
-        Log.i("USB", "Can't purge RX buffer");
-        ret = false;
-    }
-    if (debug) Log.i("USB", "purgeRX: " + ret);
-    return ret;
+        return ftDevice.purge((byte)(D2xxManager.FT_PURGE_RX));
     }
 
     public void qLog(String msg) {
@@ -202,23 +190,19 @@ public class SIO2PCUS4A implements SerialDevice
     }
 
     public int getModemStatus() {
-    int ret = -2;
-    try {
-        ret = sPort.getStatus();
-    } catch (IOException e) {
-        Log.i("USB", "Can't get modem status");
-        ret = -1;
-    }
-    if (debug) {
-        counter +=1;
-        if (counter < 3) {
-            Log.i("USB", "getModemStatus: " + ret);
-        } else {
-             if (counter == 3 ) Log.i("USB", "getModemStatus called too many times!");
-             if (counter > 50000) counter = 0;
+        int ret = -2;
+        ret = ftDevice.getQueueStatus();
+
+        if (debug) {
+            counter +=1;
+            if (counter < 3) {
+                Log.i("USB", "getModemStatus: " + ret);
+            } else {
+                 if (counter == 3 ) Log.i("USB", "getModemStatus called too many times!");
+                 if (counter > 50000) counter = 0;
+            }
         }
-    }
-    return ret;
+        return ret;
     }
 
     public int getSWCommandFrame() {
@@ -232,12 +216,8 @@ public class SIO2PCUS4A implements SerialDevice
         ret = 0; total = 0; total_retries = 0;
         do {
             if (total_retries > 2) return 2;
-            try {
-                ret = sPort.sread(sa.rb, 5-total, 5000);
-                if (ret == 5) break;
-            }
-            catch (IOException e) {};
-
+            ret = ftDevice.read(sa.rb, 5-total);
+            if (ret == 5) break;
             if ((ret > 0) && (ret < 5)) {
                 System.arraycopy(sa.rb, 0, sa.t, total, ret);
                 prtl = true;
@@ -260,9 +240,7 @@ public class SIO2PCUS4A implements SerialDevice
                             sa.rb[i] = sa.rb[i+1];
                     ret = 0;
                     do {
-                        try {
-                            ret = sPort.sread(sa.t, 1, 5000); }
-                        catch (IOException e) {};
+                        ret = ftDevice.read(sa.t, 1);
                     } while (ret < 1);
                     sa.rb[4] = sa.t[0];
             } else
@@ -322,12 +300,7 @@ public class SIO2PCUS4A implements SerialDevice
 
         total = 0; total_retries = 0;
         do {
-            res = 0;
-            try {
-                if (total_retries > 4) return 2;
-                res = sPort.sread(sa.rb, 5-total, 5000); }
-            catch (IOException e) {};
-
+            res = ftDevice.read(sa.rb, 5-total);
             if (res > 0) {
                 for (int i=0; i<res; i++) {
                    if (debug) Log.i("USB", "CF: " + (sa.rb[i] & 0xff));

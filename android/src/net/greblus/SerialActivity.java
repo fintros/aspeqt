@@ -49,7 +49,7 @@ public class SerialActivity extends QtActivity
             s_activity = this;
             super.onCreate(savedInstanceState);
             if (m_serial == 0)
-                m_device = new SIO2PCUS4A();
+                m_device = new SIO2PC();
             else
                 m_device = new SIO2BT();
 
@@ -153,7 +153,7 @@ public class SerialActivity extends QtActivity
             if (type == 1)
                 m_device = new SIO2BT();
             else
-                m_device = new SIO2PCUS4A();
+                m_device = new SIO2PC();
         }
 
         public static int openDevice() {
